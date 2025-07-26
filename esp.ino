@@ -3,46 +3,36 @@
 #include <DHT.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
-#include <Adafruit_BMP280.h>  // Include the BMP280 library
+#include <Adafruit_BMP280.h>
 
-// Define the pin for the DHT22 sensor
+// ----- DHT22 Sensor -----
 #define DHT_PIN 23
 #define DHTTYPE DHT22
-
 DHT dht(DHT_PIN, DHTTYPE);
 
-// OLED I2C pins
-#define OLED_SDA_PIN 25  // Define the SDA pin for OLED
-#define OLED_SCL_PIN 26  // Define the SCL pin for OLED
-
-// SH1106 OLED settings
-#define i2c_Address 0x3c  // Default OLED I2C address
-#define SCREEN_WIDTH 128  // OLED display width, in pixels
-#define SCREEN_HEIGHT 64  // OLED display height, in pixels
-#define OLED_RESET -1     // No reset pin
+// ----- OLED SH1106 -----
+#define i2c_Address 0x3c
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
 Adafruit_SH1106G display = Adafruit_SH1106G(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-// BMP280 settings
-Adafruit_BMP280 bmp;  // Create an instance of the BMP280 sensor
+// ----- BMP280 -----
+Adafruit_BMP280 bmp;
+bool bmpAvailable = false;  // Track if BMP280 is connected
 
-// Arrays for multiple WiFi credentials
-const char* ssids[] = {"realme_C11", "Arthi",  "realme_C12"};  // Add your SSIDs here
-const char* passwords[] = {"artthhii", "01707275528",  "aabbcc112233"};  // Corresponding passwords
+// ----- WiFi Credentials -----
+const char* ssids[] = {"realme_C11", "Arthi",  "realme_C12"};
+const char* passwords[] = {"artthhii", "01707275528",  "aabbcc112233"};
 
-// Enter domain name and path
+// ----- Server Info -----
 const char* SERVER_NAME = "http://studiozzzzprojects.atwebpages.com/sensordata.php";
-
-// PROJECT_API_KEY must match the value in your server-side config file
 String PROJECT_API_KEY = "iloveher143";
+int station_id = 2;
+float latitude = 22.467337244425735;
+float longitude = 89.61335239604378;
 
-// Define the station ID manually for each ESP32 device
-int station_id = 2;  // Change this ID for each device (1, 2, 3, etc.)
-
-// Hardcoded latitude and longitude for the station
-float latitude = 22.471614;  // Replace with actual latitude
-float longitude = 89.591606; // Replace with actual longitude
-
-// Send an HTTP POST request every 30 seconds
+// ----- Timers -----
 unsigned long lastMillis = 0;
 long interval = 5000;
 
@@ -50,31 +40,31 @@ void setup() {
   Serial.begin(115200);
   Serial.println("ESP32 serial initialized");
 
-  // Initialize DHT22
   dht.begin();
   Serial.println("DHT22 initialized");
 
-  // Initialize OLED display (using default I2C pins)
-  Wire.begin();  // Default I2C pins (SDA = 21, SCL = 22 for ESP32)
+  // Initialize OLED with default I2C pins (SDA 21, SCL 22)
+  Wire.begin();
   if (!display.begin(i2c_Address, true)) {
     Serial.println(F("OLED initialization failed!"));
-    while (1); // Halt execution if display fails
+    while (1);
   }
 
-  display.display();  // Show splash screen
-  delay(2000);        // Pause for the splash screen
+  display.display();
+  delay(2000);
   display.clearDisplay();
 
-  // Initialize BMP280 sensor
-  if (!bmp.begin(0x76)) {  // Default I2C address for BMP280 is 0x76
-    Serial.println(F("Could not find a valid BMP280 sensor, check wiring!"));
-    displayStatusMessage("BMP280 Error!");
-    while (1);  // Halt execution if sensor initialization fails
+  // Initialize BMP280
+  if (bmp.begin(0x76)) {
+    bmpAvailable = true;
+    Serial.println("BMP280 initialized");
+  } else {
+    bmpAvailable = false;
+    Serial.println(F("BMP280 not found. Continuing without pressure data."));
+    displayStatusMessage("BMP Missing, Skipping");
+    delay(1500);
   }
 
-  Serial.println("BMP280 initialized");
-
-  // Connect to WiFi (Multiple SSIDs and passwords)
   connectToWiFi();
 
   Serial.println("");
@@ -85,10 +75,8 @@ void setup() {
 }
 
 void loop() {
-  // Check WiFi connection status
   if (WiFi.status() == WL_CONNECTED) {
     if (millis() - lastMillis > interval) {
-      // Read sensor data and update display
       float t = dht.readTemperature();
       float h = dht.readHumidity();
 
@@ -98,13 +86,9 @@ void loop() {
         return;
       }
 
-      // Read pressure from BMP280
-      float pressure = bmp.readPressure() / 100.0F;  // Convert from Pa to hPa
+      float pressure = bmpAvailable ? bmp.readPressure() / 100.0F : -1.0;
 
-      // Display sensor data
       displaySensorData(t, h, pressure, station_id);
-
-      // Send data to the server
       upload_data(t, h, pressure);
       lastMillis = millis();
     }
@@ -116,45 +100,43 @@ void loop() {
 }
 
 void connectToWiFi() {
-  int numNetworks = sizeof(ssids) / sizeof(ssids[0]);  // Get the number of SSIDs in the array
+  int numNetworks = sizeof(ssids) / sizeof(ssids[0]);
   bool connected = false;
-  
+
   for (int i = 0; i < numNetworks; i++) {
     Serial.print("Connecting to WiFi: ");
     Serial.println(ssids[i]);
     WiFi.begin(ssids[i], passwords[i]);
-    
+
     int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 10) {  // Try for 10 attempts
+    while (WiFi.status() != WL_CONNECTED && attempts < 10) {
       delay(500);
       Serial.print(".");
       attempts++;
     }
-    
+
     if (WiFi.status() == WL_CONNECTED) {
       connected = true;
       displayStatusMessage("WiFi Connected!");
-      break;  // Exit loop if connected
+      break;
     } else {
       Serial.println("\nFailed to connect to WiFi.");
     }
   }
 
   if (!connected) {
-    displayStatusMessage("WiFi Connection Failed!");
+    displayStatusMessage("WiFi Failed!");
     Serial.println("Could not connect to any WiFi networks.");
-    while (1);  // Halt execution if connection fails
+    while (1);
   }
 }
 
 void upload_data(float temperature, float humidity, float pressure) {
-  // Prepare HTTP POST request data
-  String postData;
-  postData = "api_key=" + PROJECT_API_KEY;
+  String postData = "api_key=" + PROJECT_API_KEY;
   postData += "&station_id=" + String(station_id);
   postData += "&temperature=" + String(temperature, 2);
   postData += "&humidity=" + String(humidity, 2);
-  postData += "&pressure=" + String(pressure, 2);  // Include pressure data
+  postData += "&pressure=" + (pressure >= 0 ? String(pressure, 2) : "null");
   postData += "&latitude=" + String(latitude, 6);
   postData += "&longitude=" + String(longitude, 6);
 
@@ -174,7 +156,6 @@ void upload_data(float temperature, float humidity, float pressure) {
   http.end();
 }
 
-// Function to display sensor data on OLED
 void displaySensorData(float temp, float hum, float pressure, int station) {
   display.clearDisplay();
 
@@ -196,22 +177,23 @@ void displaySensorData(float temp, float hum, float pressure, int station) {
 
   display.setCursor(0, 52);
   display.print("Pressure: ");
-  display.print(pressure, 2);
-  display.println(" hPa");
+  if (pressure >= 0) {
+    display.print(pressure, 2);
+    display.println(" hPa");
+  } else {
+    display.println("N/A");
+  }
 
   display.display();
 }
 
-// Function to display status messages on OLED
 void displayStatusMessage(String message) {
   display.clearDisplay();
-
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
   display.setCursor(0, 0);
   display.println("STATUS:");
   display.setCursor(0, 16);
   display.println(message);
-
   display.display();
 }
