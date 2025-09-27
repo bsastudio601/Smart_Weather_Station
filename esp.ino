@@ -4,6 +4,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
 #include <Adafruit_BMP280.h>
+#include <TinyGPS++.h>
 
 // ----- DHT22 Sensor -----
 #define DHT_PIN 23
@@ -19,81 +20,82 @@ Adafruit_SH1106G display = Adafruit_SH1106G(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, 
 
 // ----- BMP280 -----
 Adafruit_BMP280 bmp;
-bool bmpAvailable = false;  // Track if BMP280 is connected
+bool bmpAvailable = false;
 
 // ----- WiFi Credentials -----
-const char* ssids[] = {"realme_C11", "Arthi",  "realme_C12"};
-const char* passwords[] = {"artthhii", "01707275528",  "aabbcc112233"};
+const char* ssids[] = {"realme_C11", "Arthi", "realme_C12"};
+const char* passwords[] = {"artthhii", "01707275528", "aabbcc112233"};
 
 // ----- Server Info -----
 const char* SERVER_NAME = "http://studiozzzzprojects.atwebpages.com/sensordata.php";
 String PROJECT_API_KEY = "iloveher143";
-int station_id = 2;
-float latitude = 22.467337244425735;
-float longitude = 89.61335239604378;
+int station_id = 2;  // ✅ keep station_id for server
 
-// ----- Timers -----
+// ----- GPS (NEO-6M) -----
+#define RXD2 16  // GPS TX → ESP RX
+#define TXD2 17  // GPS RX → ESP TX
+HardwareSerial neogps(1);
+TinyGPSPlus gps;
+
+// ----- Timer -----
 unsigned long lastMillis = 0;
 long interval = 5000;
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("ESP32 serial initialized");
-
   dht.begin();
-  Serial.println("DHT22 initialized");
 
-  // Initialize OLED with default I2C pins (SDA 21, SCL 22)
   Wire.begin();
   if (!display.begin(i2c_Address, true)) {
-    Serial.println(F("OLED initialization failed!"));
+    Serial.println(F("OLED init failed!"));
     while (1);
   }
 
-  display.display();
-  delay(2000);
-  display.clearDisplay();
+  display.display(); delay(2000); display.clearDisplay();
 
-  // Initialize BMP280
+  // BMP280 setup
   if (bmp.begin(0x76)) {
     bmpAvailable = true;
-    Serial.println("BMP280 initialized");
   } else {
-    bmpAvailable = false;
-    Serial.println(F("BMP280 not found. Continuing without pressure data."));
-    displayStatusMessage("BMP Missing, Skipping");
+    displayStatusMessage("BMP Missing!");
     delay(1500);
   }
 
-  connectToWiFi();
+  // GPS begin
+  neogps.begin(9600, SERIAL_8N1, RXD2, TXD2);
 
-  Serial.println("");
-  Serial.print("Connected to WiFi network with IP Address: ");
-  Serial.println(WiFi.localIP());
-  Serial.println("Timer set to 5 seconds (interval variable),");
-  Serial.println("it will take 5 seconds before publishing the first reading.");
+  // Connect WiFi
+  connectToWiFi();
+  Serial.println("Ready!");
 }
 
 void loop() {
+  // Update GPS
+  while (neogps.available()) {
+    gps.encode(neogps.read());
+  }
+
   if (WiFi.status() == WL_CONNECTED) {
     if (millis() - lastMillis > interval) {
       float t = dht.readTemperature();
       float h = dht.readHumidity();
+      float pressure = bmpAvailable ? bmp.readPressure() / 100.0F : -1.0;
+
+      float latitude = gps.location.isValid() ? gps.location.lat() : 0.0;
+      float longitude = gps.location.isValid() ? gps.location.lng() : 0.0;
 
       if (isnan(t) || isnan(h)) {
-        Serial.println(F("Failed to read from DHT sensor!"));
         displayStatusMessage("Sensor Error!");
         return;
       }
 
-      float pressure = bmpAvailable ? bmp.readPressure() / 100.0F : -1.0;
+      displaySensorData(t, h, pressure, latitude, longitude);
+      upload_data(t, h, pressure, latitude, longitude);
 
-      displaySensorData(t, h, pressure, station_id);
-      upload_data(t, h, pressure);
       lastMillis = millis();
     }
   } else {
-    displayStatusMessage("WiFi Disconnected!");
+    displayStatusMessage("WiFi Lost!");
   }
 
   delay(1000);
@@ -101,87 +103,74 @@ void loop() {
 
 void connectToWiFi() {
   int numNetworks = sizeof(ssids) / sizeof(ssids[0]);
-  bool connected = false;
-
   for (int i = 0; i < numNetworks; i++) {
-    Serial.print("Connecting to WiFi: ");
-    Serial.println(ssids[i]);
     WiFi.begin(ssids[i], passwords[i]);
-
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 10) {
       delay(500);
-      Serial.print(".");
       attempts++;
     }
-
     if (WiFi.status() == WL_CONNECTED) {
-      connected = true;
-      displayStatusMessage("WiFi Connected!");
-      break;
-    } else {
-      Serial.println("\nFailed to connect to WiFi.");
+      displayStatusMessage("WiFi OK");
+      return;
     }
   }
-
-  if (!connected) {
-    displayStatusMessage("WiFi Failed!");
-    Serial.println("Could not connect to any WiFi networks.");
-    while (1);
-  }
+  displayStatusMessage("WiFi Failed!");
+  while (1);
 }
 
-void upload_data(float temperature, float humidity, float pressure) {
+void upload_data(float temperature, float humidity, float pressure, float lat, float lon) {
   String postData = "api_key=" + PROJECT_API_KEY;
-  postData += "&station_id=" + String(station_id);
+  postData += "&station_id=" + String(station_id);  // ✅ station_id kept
   postData += "&temperature=" + String(temperature, 2);
   postData += "&humidity=" + String(humidity, 2);
   postData += "&pressure=" + (pressure >= 0 ? String(pressure, 2) : "null");
-  postData += "&latitude=" + String(latitude, 6);
-  postData += "&longitude=" + String(longitude, 6);
+  postData += "&latitude=" + String(lat, 6);
+  postData += "&longitude=" + String(lon, 6);
 
-  Serial.print("postData: ");
-  Serial.println(postData);
-
-  WiFiClient client;
   HTTPClient http;
-
+  WiFiClient client;
   http.begin(client, SERVER_NAME);
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-  int httpResponseCode = http.POST(postData);
 
-  Serial.print("HTTP Response code: ");
-  Serial.println(httpResponseCode);
-
+  int response = http.POST(postData);
+  Serial.print("HTTP Response: ");
+  Serial.println(response);
   http.end();
 }
 
-void displaySensorData(float temp, float hum, float pressure, int station) {
+void displaySensorData(float temp, float hum, float pressure, float lat, float lon) {
   display.clearDisplay();
-
   display.setTextSize(1);
   display.setTextColor(SH110X_WHITE);
+
+  // Line 1 - Coords
   display.setCursor(0, 0);
-  display.println("Station ID: " + String(station));
+  display.print("Lat:");
+  display.print(lat, 2);
+  display.print(" Lon:");
+  display.print(lon, 2);
 
-  display.setTextSize(1.2);
-  display.setCursor(0, 28);
-  display.print("Temp: ");
+  // Line 2 - Temp
+  display.setCursor(0, 16);
+  display.print("T:");
   display.print(temp, 1);
-  display.println("C");
+  display.print("C");
 
-  display.setCursor(0, 40);
-  display.print("Humidity: ");
+  // Line 3 - Humidity
+  display.setCursor(64, 16);
+  display.print("H:");
   display.print(hum, 1);
-  display.println("%");
+  display.print("%");
 
-  display.setCursor(0, 52);
-  display.print("Pressure: ");
+  // Line 4 - Pressure
+  display.setCursor(0, 32);
+  display.print("P:");
   if (pressure >= 0) {
-    display.print(pressure, 2);
-    display.println(" hPa");
+    display.print(pressure, 1);
+    display.print("hPa");
   } else {
-    display.println("N/A");
+    display.print("N/A");
   }
 
   display.display();
