@@ -28,7 +28,7 @@ const char* passwords[] = {"artthhii", "01707275528", "aabbcc112233"};
 
 // ----- Server Info -----
 const char* SERVER_NAME = "http://studiozzzzprojects.atwebpages.com/sensordata.php";
-String PROJECT_API_KEY = "iloveher143";
+String PROJECT_API_KEY = "API KEY HERE";
 int station_id = 2;  // ✅ keep station_id for server
 
 // ----- GPS (NEO-6M) -----
